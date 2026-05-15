@@ -21,6 +21,8 @@ class Cube:
             self.right = [[3] * 2 for i in range(2)]
             self.up = [[4] * 2 for i in range(2)]
             self.bottom = [[5] * 2 for i in range(2)]
+            self.last_layers_done = [0, 0]
+            self.present_layers_done = [0, 0]
         else:
             self.front = [[0] * 3 for i in range(3)]
             self.back = [[1] * 3 for i in range(3)]
@@ -28,14 +30,19 @@ class Cube:
             self.right = [[3] * 3 for i in range(3)]
             self.up = [[4] * 3 for i in range(3)]
             self.bottom = [[5] * 3 for i in range(3)]
+            self.last_layers_done = [0, 0, 0]
+            self.present_layers_done = [0, 0, 0]
 
         self.move_history = []
         self.state_history = []
-        self.last_layers_done = [0,0,0]
-        self.present_layers_done = [0,0,0]
+        #up left front right bottom back
+        self.last_walls_done = [0,0,0,0,0,0]
+        self.present_walls_done = [0,0,0,0,0,0]
         self.counter = 0
 
         self.make_random_moves(init_moves)
+        self.count_walls_done()
+        self.count_layers_done()
 
     def show(self):
         for i in range(self.ds):
@@ -77,16 +84,16 @@ class Cube:
 
     def count_layers_done(self):
         layers_done = [0,0,0]
-        for side in [self.front, self.back, self.left, self.right, self.up, self.bottom]:
-            for i in range(len(side)):
-                layer = 1
+        for i in range(self.ds):
+            layer = 4
+            for side in [self.front, self.back, self.left, self.right]:
                 first = side[i][0]
                 for j in range(1,len(side)):
                     if side[i][j] == first:
                         layer += 1
                     else:
                         break
-                if layer == self.ds:
+                if layer == self.ds*4:
                     layers_done[i] +=1
 
         self.last_layers_done = self.present_layers_done
@@ -94,6 +101,25 @@ class Cube:
 
     def get_layers_done(self):
         return self.last_layers_done, self.present_layers_done
+
+    def count_walls_done(self):
+        walls_done = [0,0,0,0,0,0]
+        sides = [self.up, self.left, self.front, self.right, self.bottom, self.back]
+        for i in range(6):
+            wall = 0
+            wall_first = sides[i][0][0]
+            for j in range(self.ds):
+                for k in range(self.ds):
+                    if sides[i][j][k] == wall_first:
+                        wall += 1
+            if wall == self.ds*self.ds:
+                walls_done[i] +=1
+
+        self.last_walls_done = self.present_walls_done
+        self.present_walls_done = walls_done
+
+    def get_walls_done(self):
+        return self.last_walls_done, self.present_walls_done
 
     def get_side_incorrect_squares(self, side_name):
         incorrect_squares = 0
@@ -750,10 +776,11 @@ class Cube:
         if not init:
             self.move_history.append(move)
             self.state_history.append(self.get_state_one_hot())
+            self.count_walls_done()
             self.count_layers_done()
             self.counter += 1
 
-        return self.get_state_one_hot(), self.get_cube_entropy(), self.counter, self.get_cube_entropy()==0, self.counter>=200
+        return self.get_state_one_hot(), self.get_cube_entropy(), self.counter, self.get_cube_entropy()==0, self.counter>=100
 
     def make_random_moves(self, n):
         for i in range(n):

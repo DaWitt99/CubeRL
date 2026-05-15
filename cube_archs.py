@@ -3,7 +3,7 @@ import tensorflow as tf
 def make_model(model_type):
     if model_type == "Dense_4":
         model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(324,)),
+            tf.keras.layers.Input(shape=(972,)),
             DenseBN(units=4096, activation='elu'),
             DenseBN(units=2048, activation='elu'),
             DenseBN(units=2048, activation='elu'),
@@ -12,11 +12,9 @@ def make_model(model_type):
         ])
     elif model_type == "Residual_4":
         model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(324,)),
-            DenseBN(units=4096, activation='elu'),
-            ResidualBlock(4096,"elu"),
-            ResidualBlock(2048,"elu"),
-            ResidualBlock(2048,"elu"),
+            tf.keras.layers.Input(shape=(972,)),
+            ResidualBlock(1024,"elu"),
+            ResidualBlock(1024,"elu"),
             ResidualBlock(1024,"elu"),
             tf.keras.layers.Dense(18)
         ])
