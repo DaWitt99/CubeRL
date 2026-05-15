@@ -1,71 +1,30 @@
 from cube import Cube
+from cube_archs import DenseBN, ResidualBlock, make_model
 from collections import deque
 import tensorflow as tf
 import numpy as np
 
-class DenseBN(tf.keras.layers.Layer):
-    def __init__(self,units=64, activation='elu', **kwargs):
-        super().__init__(**kwargs)
-        self.units = units
-        self.activation = tf.keras.activations.get(activation)
-        self.dense = tf.keras.layers.Dense(units=self.units, kernel_initializer="he_normal")
-        self.bn = tf.keras.layers.BatchNormalization()
+def sample_experiences(memory, batch_size=32, win_learnings=8):
+    dones = np.array([exp[4] for exp in memory])
+    dones_indices = np.argwhere(dones==True)
+    size = min(len(dones_indices), win_learnings)
+    won_indices = []
 
-    def call(self, inputs):
-        x = self.dense(inputs)
-        x = self.bn(x)
-        x= self.activation(x)
-        return x
+    if size > 0:
+        won_indices = np.random.choice(np.squeeze(dones_indices), size=size, replace=False)
 
-    def get_config(self):
-        base_config = super().get_config()
-        return {**base_config, 'units': self.units, 'activation': tf.keras.activations.serialize(self.activation)}
-
-class ResidualBlock(tf.keras.layers.Layer):
-    def __init__(self, units = 128, activation='relu', **kwargs):
-        super().__init__(**kwargs)
-        self.units = units
-        self.activation = tf.keras.activations.get(activation)
-        self.layers = [
-            tf.keras.layers.Dense(units=self.units, kernel_initializer="he_normal"),
-            tf.keras.layers.BatchNormalization(),
-            self.activation,
-            tf.keras.layers.Dense(units=self.units, kernel_initializer="he_normal"),
-            tf.keras.layers.BatchNormalization(),
-        ]
-        self.skip_layers = [
-            tf.keras.layers.Dense(units=self.units, kernel_initializer="he_normal"),
-            tf.keras.layers.BatchNormalization(),
-        ]
-
-    def call(self, inputs):
-        Y = inputs
-        for layer in self.layers:
-            Y=layer(Y)
-
-        Y_skip = inputs
-        for skip_layer in self.skip_layers:
-            Y_skip = skip_layer(Y_skip)
-
-        return self.activation(Y+Y_skip)
-
-    def get_config(self):
-        base_config = super().get_config()
-        return {**base_config, 'units': self.units, 'activation': tf.keras.activations.serialize(self.activation)}
-
-def sample_experiences(batch_size=64):
-    indices = np.random.randint(low=0, high=len(experiences_buffer)-1, size=batch_size)
-    exps = [experiences_buffer[i] for i in indices]
+    indices = np.concat((np.random.randint(low=0, high=len(memory)-1, size=batch_size-size),won_indices))
+    exps = [memory[int(i)] for i in indices]
     return [np.array([experience[field_index] for experience in exps]) for field_index in range(6)]
 
 def epsilon_greedy_policy(model, state, epsilon=0):
     if np.random.random() < epsilon:
-        return np.random.randint(0,13)
+        return np.random.randint(0,18)
     else:
         Q_vals = model.predict(state)
         return np.argmax(Q_vals)
 
-def play_one_step(model, epsilon, cube):
+def play_one_step(model, epsilon, cube, memory):
     state = cube.get_state_one_hot()
     action = epsilon_greedy_policy(model,state,epsilon)
 
@@ -82,76 +41,75 @@ def play_one_step(model, epsilon, cube):
         if np.array_equal(state,past_state):
             no_repeats_rewards -=1
 
-    reward = no_repeats_rewards + layer_reward + done * 1200 - 1
+    reward = no_repeats_rewards + layer_reward + done * 20 - 1
 
-    experiences_buffer.append([state, action, reward, next_state, done, truncated])
+    memory.append([state, action, reward, next_state, done, truncated])
     return next_state, reward, done, truncated, cube_entropy, action
 
-def training_step(model, batch_size=32):
-    exps = sample_experiences(batch_size)
+def training_step(model,target_model, discount, optimizer, memory, batch_size=32):
+    exps = sample_experiences(memory, batch_size)
     states, actions, rewards, next_states, dones, truncateds = exps
-    next_Q_values = []
-    for next in next_states:
-        next_Q_values.append(model.predict(next, verbose=0))
-    max_next_Q_values = np.max(next_Q_values, axis=2)
-    target_Q_values = rewards.reshape(batch_size,1) + discount * max_next_Q_values
+    next_Q_values = target_model.predict(np.squeeze(next_states), verbose=0)
+    max_next_Q_values = np.max(next_Q_values, axis=1)
+    target_Q_values = rewards + discount * max_next_Q_values
     target_Q_values = target_Q_values.reshape(-1,1)
     mask = tf.one_hot(actions, 18)
 
     with tf.GradientTape() as tape:
-        all_Q_values = [model(state) for state in states]
-        Q_values = tf.reduce_max(tf.reduce_sum(all_Q_values*mask, axis=2, keepdims=True),axis=1)
+        all_Q_values = model(np.squeeze(states))
+        Q_values = tf.reduce_sum(all_Q_values*mask, axis=1, keepdims=True)
         loss = tf.reduce_mean(tf.keras.losses.mse(target_Q_values, Q_values))
         print(loss)
 
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
-def training_loop(model, episodes):
+def training_loop(model, target, episodes, discount, optimizer, memory):
     for episode in range(episodes):
         cube = Cube(3,1)
 
-        for step in range(200):
-            epsilon = max(1-episode/200,0.1)
-            next_state,reward,done,truncated,entropy,action = play_one_step(model,epsilon, cube)
+        for step in range(40):
+            epsilon = max(1-episode/episodes,0.1)
+            next_state,reward,done,truncated,entropy,action = play_one_step(model,epsilon, cube, memory)
             print("EPISODE", episode, "STEP", step, 'REWARD', reward, 'DONE', done, "ENTROPY", entropy)
 
             if done or truncated:
                 break
 
-        if episode > -1:
-            training_step(model)
+        if episode % 100 == 0:
+            target.set_weights(model.get_weights())
+
+        if episode > 1000:
+            training_step(model, target, discount, optimizer, memory)
             cube_solver.save('cubeRL.keras')
 
 def testing_loop(model, episodes):
     for episode in range(episodes):
         cube = Cube(3,1)
-        for step in range(200):
+        for step in range(40):
             next_state, reward, done, truncated, entropy, action = play_one_step(model, 0, cube)
             print("TEST EPISODE", episode, "STEP", step, 'REWARD', reward, 'DONE', done, "ENTROPY", entropy)
 
-cube_solver = tf.keras.Sequential([
-    #tf.keras.layers.Flatten(),
-    DenseBN(units=4096, activation='elu'),
-    DenseBN(units=2048, activation='elu'),
-    DenseBN(units=2048, activation='elu'),
-    DenseBN(units=1024, activation='elu'),
-    tf.keras.layers.Dense(14),
-])
+mode = "load"
 
-experiences_buffer = deque(maxlen=4000)
+if mode == "load":
+    model = tf.keras.models.load_model('cubeRL.keras',
+                                       custom_objects={'ResidualBlock': ResidualBlock, "DenseBN": DenseBN})
+    target = tf.keras.models.load_model('cubeRL.keras',
+                                        custom_objects={'ResidualBlock': ResidualBlock, "DenseBN": DenseBN})
+else:
+    model_type = "Dense_4"
+    model = make_model(model_type)
+    target = make_model(model_type)
+
+experiences_buffer = deque(maxlen=100000)
 discount = 0.95
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.000025, clipnorm=0.1)
 
-residual_solver = tf.keras.Sequential([
-    ResidualBlock(4096,"elu"),
-    ResidualBlock(2048,"elu"),
-    ResidualBlock(2048,"elu"),
-    ResidualBlock(1024,"elu"),
-    tf.keras.layers.Dense(18)
-])
+model.compile(loss="mse", optimizer=optimizer)
+target.compile(loss="mse", optimizer=optimizer)
+target.set_weights(model.get_weights())
 
-#cube_solver=tf.keras.models.load_model('cubeRL.keras', custom_objects={'DenseBN':DenseBN})
-training_loop(residual_solver, 1000)
+training_loop(model, target, 10000, discount, optimizer, experiences_buffer)
 print("TESTING---------------")
-testing_loop(residual_solver, 1000)
+testing_loop(model, 1000)

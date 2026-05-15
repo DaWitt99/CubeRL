@@ -757,5 +757,5 @@ class Cube:
 
     def make_random_moves(self, n):
         for i in range(n):
-            rand = randint(0,12)
+            rand = randint(0,17)
             self.make_move(rand, 1)
